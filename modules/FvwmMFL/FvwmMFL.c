@@ -16,6 +16,7 @@
 #include "libs/fvwmsignal.h"
 #include "libs/vpacket.h"
 #include "libs/getpwuid.h"
+#include "libs/envvar.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -42,7 +43,7 @@
 #include <event2/util.h>
 
 /* This is also configurable via getenv() - see FvwmMFL(1) */
-#define MFL_SOCKET_DEFAULT "/tmp/fvwm_mfl.sock"
+#define MFL_SOCKET_DEFAULT "fvwm_mfl.sock"
 #define MYNAME "FvwmMFL"
 
 static int debug;
@@ -115,7 +116,7 @@ static struct fvwm_msg *fvwm_msg_new(void);
 static void fvwm_msg_free(struct fvwm_msg *);
 static void register_interest(void);
 static void send_version_info(struct client *);
-static char *set_socket_pathname(void);
+static void set_socket_pathname(void);
 
 static struct fvwm_msg *
 fvwm_msg_new(void)
@@ -637,10 +638,10 @@ fvwm_read(int efd, short ev, void *data)
 	broadcast_to_client(packet);
 }
 
-static char *
+void
 set_socket_pathname(void)
 {
-	char		*mflsock_env;
+	char		*mflsock_env, *tmpdir;
 	const char	*unrolled_path;
 
 	/* Figure out if we are using default MFL socket path or we should
@@ -649,7 +650,13 @@ set_socket_pathname(void)
 
 	mflsock_env = getenv("FVWMMFL_SOCKET");
 	if (mflsock_env == NULL) {
-		return (fxstrdup(MFL_SOCKET_DEFAULT));
+		/* Check if TMPDIR is defined.  If so, use that, otherwise
+		 * default to /tmp for the directory name.
+		 */
+		if ((tmpdir = getenv("TMPDIR")) == NULL)
+			tmpdir = "/tmp";
+		xasprintf(&sock_pathname, "%s/%s", tmpdir, MFL_SOCKET_DEFAULT);
+		return;
 	}
 
 	unrolled_path = expand_path(mflsock_env);
@@ -661,8 +668,6 @@ set_socket_pathname(void)
 	}
 
 	free((void *)unrolled_path);
-
-	return (sock_pathname);
 }
 
 int main(int argc, char **argv)
@@ -678,7 +683,7 @@ int main(int argc, char **argv)
 		return (1);
 	}
 
-	sock_pathname = set_socket_pathname();
+	set_socket_pathname();
 	unlink(sock_pathname);
 
 	/* Create new event base */
@@ -701,6 +706,18 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	evconnlistener_set_error_cb(fmd_cfd, accept_error_cb);
+
+	chmod(sock_pathname, 0770);
+
+	flib_putenv("FOO", "bar");
+
+	if (getenv("FVWMMFL_SOCKET") == NULL) {
+		fprintf(stderr, "YES\n");
+		char *pe;
+		xasprintf(&pe, "%s=%s", "FVWMMFL_SOCKET", sock_pathname);
+		flib_putenv("FVWMMFL_SOCKET", pe);
+		free(pe);
+	}
 
 	/* Setup comms to fvwm3. */
 	fc.fd[0] = fc.m->to_fvwm;
